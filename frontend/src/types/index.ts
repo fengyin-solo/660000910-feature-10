@@ -130,3 +130,18 @@ export interface HealthSummary {
   mediumPriorityCount: number;
   lowPriorityCount: number;
 }
+
+export type RegionRiskLevel = 'high' | 'medium' | 'low' | 'normal';
+
+export interface RegionRiskItem {
+  fenceId: string;
+  name: string;
+  color: string;
+  type: 'circle' | 'polygon';
+  level: RegionRiskLevel;
+  breachCount: number;
+  breachDeviceIds: string[];
+  lastTriggerTime: string | null;
+  unackedAlertCount: number;
+  hasLocation: boolean;
+}

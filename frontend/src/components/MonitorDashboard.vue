@@ -13,6 +13,10 @@
           <div style="font-size:24px;font-weight:600;color:#fff;letter-spacing:2px">{{ currentTime }}</div>
           <div style="font-size:12px;color:#78909c">{{ currentDate }}</div>
         </div>
+        <button @click="toggleRegionRisk" class="dashboard-btn"
+          :class="showRegionRisk ? 'dashboard-btn-risk-active' : 'dashboard-btn-risk'">
+          🛡️ 区域风险
+        </button>
         <button @click="emit('close')" class="dashboard-btn dashboard-btn-close">
           ✕ 退出大屏
         </button>
@@ -91,7 +95,91 @@
       </div>
 
       <div style="flex:1;display:flex;flex-direction:column;gap:12px;min-width:0">
-        <div style="flex:1;background:#0d2137;border:1px solid #1e3a5f;border-radius:8px;overflow:hidden;position:relative;min-height:0">
+        <div style="flex:1;display:flex;gap:12px;min-height:0">
+          <div v-if="showRegionRisk"
+            style="width:340px;background:#0d2137;border:1px solid #1e3a5f;border-radius:8px;display:flex;flex-direction:column;flex-shrink:0;overflow:hidden">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:12px;border-bottom:1px solid #1e3a5f;flex-shrink:0">
+              <h3 style="margin:0;font-size:14px;color:#4fc3f7;display:flex;align-items:center;gap:8px">
+                🛡️ 区域风险看板
+              </h3>
+              <div style="display:flex;gap:6px">
+                <button @click="refreshRegionRisk" class="region-icon-btn" title="刷新区域数据">↻</button>
+                <button @click="toggleRegionRisk" class="region-icon-btn" title="收起看板">✕</button>
+              </div>
+            </div>
+
+            <div v-if="store.regionRiskLoaded && !store.regionRiskError && store.fences.length > 0"
+              style="display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid #1e3a5f;flex-shrink:0;flex-wrap:wrap">
+              <span :style="summaryChipStyle('#f44336')">🔴 高风险 {{ store.regionRiskSummary.high }}</span>
+              <span :style="summaryChipStyle('#ff9800')">🟠 中风险 {{ store.regionRiskSummary.medium }}</span>
+              <span :style="summaryChipStyle('#ffb300')">🟡 低风险 {{ store.regionRiskSummary.low }}</span>
+              <span :style="summaryChipStyle('#4caf50')">🟢 正常 {{ store.regionRiskSummary.normal }}</span>
+            </div>
+
+            <div style="flex:1;overflow:auto;padding:12px;min-height:0">
+              <div v-if="store.regionRiskLoading" style="text-align:center;padding:40px 20px;color:#78909c;font-size:13px">
+                <div class="region-spinner"></div>
+                <div>区域风险数据加载中…</div>
+              </div>
+
+              <div v-else-if="store.regionRiskError" style="text-align:center;padding:40px 20px">
+                <div style="font-size:32px;margin-bottom:8px">⚠️</div>
+                <div style="color:#ef9a9a;font-size:13px;margin-bottom:4px">区域风险数据加载失败</div>
+                <div style="color:#546e7a;font-size:11px;margin-bottom:12px">{{ store.regionRiskError }}</div>
+                <button @click="refreshRegionRisk" class="region-retry-btn">↻ 重新加载</button>
+              </div>
+
+              <div v-else-if="store.fences.length === 0" style="text-align:center;padding:40px 20px;color:#546e7a;font-size:13px">
+                <div style="font-size:32px;margin-bottom:8px">🗺️</div>
+                <div>暂无监控区域</div>
+                <div style="font-size:11px;margin-top:4px">请先在围栏工作台创建监控区域</div>
+              </div>
+
+              <div v-else-if="store.allRegionsNormal" style="text-align:center;padding:40px 20px;color:#546e7a;font-size:13px">
+                <div style="font-size:32px;margin-bottom:8px">✅</div>
+                <div style="color:#4caf50">全部区域正常</div>
+                <div style="font-size:11px;margin-top:4px">当前无越界设备，所有区域运行正常</div>
+              </div>
+
+              <div v-else>
+                <div v-for="region in store.regionRiskList" :key="region.fenceId"
+                  @click="handleRegionClick(region)"
+                  class="region-risk-card"
+                  :class="{ 'region-risk-card-active': selectedRegionId === region.fenceId }"
+                  :style="{ borderColor: selectedRegionId === region.fenceId ? region.color : '#1e3a5f' }">
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <span :style="{ width:'10px', height:'10px', flexShrink:0,
+                      borderRadius: region.type === 'circle' ? '50%' : '2px', background: region.color }"></span>
+                    <span style="flex:1;min-width:0;font-weight:600;font-size:13px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                      {{ region.name }}
+                    </span>
+                    <span v-if="!region.hasLocation" class="region-no-location">⚠ 位置缺失</span>
+                    <span :style="{ padding:'2px 8px', borderRadius:'4px', fontSize:'10px', fontWeight:600, flexShrink:0,
+                      background: getRegionLevelColor(region.level) + '26', color: getRegionLevelColor(region.level) }">
+                      {{ getRegionLevelText(region.level) }}
+                    </span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:12px;margin-top:8px;font-size:11px;color:#90a4ae;flex-wrap:wrap">
+                    <span>{{ getFenceTypeText(region.fenceId) }}</span>
+                    <span>🚨 越界
+                      <b :style="{ color: region.breachCount > 0 ? '#ff9800' : '#4caf50' }">{{ region.breachCount }}</b> 台
+                    </span>
+                    <span v-if="region.unackedAlertCount > 0" style="color:#ef9a9a">🔔 {{ region.unackedAlertCount }}</span>
+                    <span>🕐 {{ region.lastTriggerTime ? formatTime(region.lastTriggerTime) : '暂无触发' }}</span>
+                  </div>
+                  <div v-if="region.breachDeviceIds.length > 0" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px">
+                    <span v-for="devId in region.breachDeviceIds" :key="devId"
+                      @click.stop="handleDeviceClick(devId)"
+                      class="region-device-chip">
+                      {{ getDeviceName(devId) }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style="flex:1;background:#0d2137;border:1px solid #1e3a5f;border-radius:8px;overflow:hidden;position:relative;min-height:0;min-width:0">
           <div id="monitor-map" style="width:100%;height:100%;filter:brightness(0.85) contrast(1.1)"></div>
           <div style="position:absolute;top:12px;left:12px;background:rgba(13,33,55,0.9);border:1px solid #1e3a5f;border-radius:6px;padding:8px 12px;font-size:12px">
             <div style="display:flex;gap:16px;align-items:center">
@@ -108,6 +196,11 @@
                 离线 {{ store.offlineCount }}
               </span>
             </div>
+          </div>
+          <div v-if="locateHint"
+            style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(229,57,53,0.95);color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;z-index:1000;box-shadow:0 2px 8px rgba(0,0,0,0.4);white-space:nowrap">
+            {{ locateHint }}
+          </div>
           </div>
         </div>
 
@@ -251,10 +344,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import L from 'leaflet';
 import { useIotStore } from '../stores/iot';
-import type { Alert, AlertType, AlertSeverity, Device } from '../types';
+import type { Alert, AlertType, AlertSeverity, Device, RegionRiskItem, RegionRiskLevel } from '../types';
 
 const store = useIotStore();
 
@@ -274,8 +367,15 @@ const map = ref<any>(null);
 const fenceLayers = ref<Map<string, any>>(new Map());
 const deviceLayers = ref<Map<string, any>>(new Map());
 
+const showRegionRisk = ref(false);
+const selectedRegionId = ref<string | null>(null);
+const highlightedFenceId = ref<string | null>(null);
+const locateHint = ref('');
+
 let timeInterval: number | null = null;
 let scrollInterval: number | null = null;
+let locateHintTimer: number | null = null;
+let fenceHighlightTimer: number | null = null;
 
 function updateTime() {
   const now = new Date();
@@ -368,6 +468,119 @@ function panToDevice(deviceId: string) {
 
 function toggleAutoScroll() {
   autoScroll.value = !autoScroll.value;
+}
+
+function toggleRegionRisk() {
+  showRegionRisk.value = !showRegionRisk.value;
+}
+
+function refreshRegionRisk() {
+  store.loadRegionRisk();
+}
+
+function summaryChipStyle(color: string) {
+  return {
+    padding: '2px 8px',
+    borderRadius: '10px',
+    fontSize: '11px',
+    background: color + '1f',
+    color
+  };
+}
+
+function getRegionLevelColor(level: RegionRiskLevel): string {
+  switch (level) {
+    case 'high': return '#f44336';
+    case 'medium': return '#ff9800';
+    case 'low': return '#ffb300';
+    case 'normal': return '#4caf50';
+    default: return '#666';
+  }
+}
+
+function getRegionLevelText(level: RegionRiskLevel): string {
+  switch (level) {
+    case 'high': return '高风险';
+    case 'medium': return '中风险';
+    case 'low': return '低风险';
+    case 'normal': return '正常';
+    default: return '未知';
+  }
+}
+
+function getFenceTypeText(fenceId: string): string {
+  const fence = store.getFenceById(fenceId);
+  if (!fence) return '';
+  return fence.type === 'circle'
+    ? `圆形 · ${fence.radius}m`
+    : `多边形 · ${fence.paths?.length || 0}点`;
+}
+
+function handleRegionClick(region: RegionRiskItem) {
+  selectedRegionId.value = region.fenceId;
+  if (!region.hasLocation) {
+    showLocateHint(`「${region.name}」缺少位置资料，无法在地图定位`);
+    return;
+  }
+  panToFence(region.fenceId);
+}
+
+function showLocateHint(message: string) {
+  locateHint.value = message;
+  if (locateHintTimer) {
+    clearTimeout(locateHintTimer);
+  }
+  locateHintTimer = window.setTimeout(() => {
+    locateHint.value = '';
+    locateHintTimer = null;
+  }, 3000);
+}
+
+function panToFence(fenceId: string) {
+  if (!map.value) return;
+  const layer = fenceLayers.value.get(fenceId);
+  if (!layer) {
+    const fence = store.getFenceById(fenceId);
+    if (fence) {
+      showLocateHint(`「${fence.name}」缺少位置资料，无法在地图定位`);
+    }
+    return;
+  }
+
+  if (highlightedFenceId.value && highlightedFenceId.value !== fenceId) {
+    const prevLayer = fenceLayers.value.get(highlightedFenceId.value);
+    if (prevLayer) {
+      prevLayer.setStyle({ weight: 2, fillOpacity: 0.15 });
+    }
+  }
+
+  const bounds = layer.getBounds ? layer.getBounds() : null;
+  if (bounds && bounds.isValid()) {
+    map.value.fitBounds(bounds, { padding: [60, 60], animate: true });
+  } else if (layer.getLatLng) {
+    map.value.panTo(layer.getLatLng(), { animate: true, duration: 0.5 });
+  }
+
+  layer.setStyle({ weight: 4, fillOpacity: 0.35 });
+  if (layer.bringToFront) {
+    layer.bringToFront();
+  }
+  layer.openPopup();
+  highlightedFenceId.value = fenceId;
+
+  if (fenceHighlightTimer) {
+    clearTimeout(fenceHighlightTimer);
+  }
+  fenceHighlightTimer = window.setTimeout(() => {
+    const currentLayer = fenceLayers.value.get(fenceId);
+    if (currentLayer) {
+      currentLayer.setStyle({ weight: 2, fillOpacity: 0.15 });
+    }
+    if (highlightedFenceId.value === fenceId) {
+      highlightedFenceId.value = null;
+    }
+    fenceHighlightTimer = null;
+  }, 3000);
 }
 
 function renderFence(fence: any) {
@@ -477,6 +690,16 @@ watch(() => store.highlightedDeviceId, (newId) => {
   }
 });
 
+watch(showRegionRisk, async (visible) => {
+  if (visible && !store.regionRiskLoaded && !store.regionRiskLoading && !store.regionRiskError) {
+    store.loadRegionRisk();
+  }
+  await nextTick();
+  if (map.value) {
+    map.value.invalidateSize();
+  }
+});
+
 onMounted(() => {
   const style = document.createElement('style');
   style.textContent = `
@@ -505,6 +728,97 @@ onMounted(() => {
     }
     .dashboard-btn-close:hover {
       background: #29434e;
+    }
+    .dashboard-btn-risk {
+      background: #1e3a5f;
+    }
+    .dashboard-btn-risk:hover {
+      background: #29434e;
+    }
+    .dashboard-btn-risk-active {
+      background: #e65100;
+    }
+    .dashboard-btn-risk-active:hover {
+      background: #ef6c00;
+    }
+    .region-icon-btn {
+      width: 26px;
+      height: 26px;
+      border-radius: 4px;
+      border: 1px solid #37474f;
+      background: #1e3a5f;
+      color: #e0e0e0;
+      cursor: pointer;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+    }
+    .region-icon-btn:hover {
+      background: #29434e;
+    }
+    .region-retry-btn {
+      padding: 6px 16px;
+      border-radius: 4px;
+      border: 1px solid #ef9a9a;
+      background: rgba(229, 57, 53, 0.15);
+      color: #ef9a9a;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+    .region-retry-btn:hover {
+      background: rgba(229, 57, 53, 0.3);
+    }
+    .region-risk-card {
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      border-radius: 6px;
+      border: 1px solid #1e3a5f;
+      background: #0a1929;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .region-risk-card:hover {
+      background: #132f4c;
+    }
+    .region-risk-card-active {
+      background: #132f4c !important;
+    }
+    .region-device-chip {
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      background: rgba(255, 152, 0, 0.15);
+      color: #ffcc80;
+      border: 1px solid rgba(255, 152, 0, 0.4);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .region-device-chip:hover {
+      background: rgba(255, 152, 0, 0.35);
+    }
+    .region-no-location {
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      flex-shrink: 0;
+      background: rgba(255, 179, 0, 0.15);
+      color: #ffb300;
+      border: 1px solid rgba(255, 179, 0, 0.4);
+    }
+    .region-spinner {
+      width: 28px;
+      height: 28px;
+      margin: 0 auto 12px;
+      border: 3px solid #1e3a5f;
+      border-top-color: #4fc3f7;
+      border-radius: 50%;
+      animation: region-spin 0.8s linear infinite;
+    }
+    @keyframes region-spin {
+      to { transform: rotate(360deg); }
     }
     .device-rank-item {
       display: flex;
@@ -585,6 +899,12 @@ onUnmounted(() => {
   }
   if (scrollInterval) {
     clearInterval(scrollInterval);
+  }
+  if (locateHintTimer) {
+    clearTimeout(locateHintTimer);
+  }
+  if (fenceHighlightTimer) {
+    clearTimeout(fenceHighlightTimer);
   }
   store.stopMockAlertStream();
   store.setHighlightedDevice(null);

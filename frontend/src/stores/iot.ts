@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { Device, Geofence, Alert, AlertType, AlertSeverity, DeviceGroup, DeviceThresholds, TrackData, TrackPoint, StayPoint, TrackSegment, HealthDataPoint, DeviceHealth, HealthSummary } from '../types';
+import type { Device, Geofence, Alert, AlertType, AlertSeverity, DeviceGroup, DeviceThresholds, TrackData, TrackPoint, StayPoint, TrackSegment, HealthDataPoint, DeviceHealth, HealthSummary, RegionRiskItem, RegionRiskLevel } from '../types';
 
 function generateId(prefix: string) {
   return prefix + Date.now() + Math.random().toString(36).slice(2, 6);
@@ -853,6 +853,147 @@ export const useIotStore = defineStore('iot', () => {
       .slice(0, 20);
   });
 
+  // ---- 区域风险看板 ----
+
+  const regionRiskLoading = ref(false);
+  const regionRiskError = ref<string | null>(null);
+  const regionRiskLoaded = ref(false);
+
+  function isValidLatLng(p: { lat: number; lng: number } | undefined | null): boolean {
+    return !!p && Number.isFinite(p.lat) && Number.isFinite(p.lng) &&
+      Math.abs(p.lat) <= 90 && Math.abs(p.lng) <= 180;
+  }
+
+  function fenceHasLocation(fence: Geofence): boolean {
+    if (fence.type === 'circle') {
+      return isValidLatLng(fence.center) && fence.radius > 0;
+    }
+    return !!fence.paths && fence.paths.length >= 3 && fence.paths.every(isValidLatLng);
+  }
+
+  function distanceInMeters(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+    const R = 6371000;
+    const rad = Math.PI / 180;
+    const dLat = (b.lat - a.lat) * rad;
+    const dLng = (b.lng - a.lng) * rad;
+    const h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(a.lat * rad) * Math.cos(b.lat * rad) *
+      Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  }
+
+  function isPointInPolygon(point: { lat: number; lng: number }, paths: Array<{ lat: number; lng: number }>): boolean {
+    let inside = false;
+    for (let i = 0, j = paths.length - 1; i < paths.length; j = i++) {
+      const xi = paths[i].lng, yi = paths[i].lat;
+      const xj = paths[j].lng, yj = paths[j].lat;
+      const intersect = ((yi > point.lat) !== (yj > point.lat)) &&
+        (point.lng < (xj - xi) * (point.lat - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  function isDeviceInFence(device: Device, fence: Geofence): boolean {
+    if (fence.type === 'circle') {
+      return distanceInMeters(device, fence.center) <= fence.radius;
+    }
+    if (fence.paths && fence.paths.length >= 3) {
+      return isPointInPolygon(device, fence.paths);
+    }
+    return false;
+  }
+
+  const regionRiskList = computed<RegionRiskItem[]>(() => {
+    const levelWeight: Record<RegionRiskLevel, number> = { high: 3, medium: 2, low: 1, normal: 0 };
+
+    const items = fences.value.map((fence): RegionRiskItem => {
+      const hasLocation = fenceHasLocation(fence);
+
+      // 当前越界设备：在线/告警设备中，进入告警围栏内或离开告警围栏外的设备
+      const breachDeviceIds = hasLocation
+        ? devices.value
+            .filter(d => d.status !== 'offline')
+            .filter(d => {
+              const inside = isDeviceInFence(d, fence);
+              return (inside && fence.alertOnEnter) || (!inside && fence.alertOnExit);
+            })
+            .map(d => d.id)
+        : [];
+
+      const fenceAlerts = alerts.value.filter(a => a.fenceId === fence.id);
+      const unacked = fenceAlerts.filter(a => !a.acknowledged);
+      const lastTriggerTime = fenceAlerts.length > 0
+        ? fenceAlerts.reduce((max, a) => (a.timestamp > max ? a.timestamp : max), fenceAlerts[0].timestamp)
+        : null;
+
+      const breachCount = breachDeviceIds.length;
+      const hasCritical = unacked.some(a => a.severity === 'critical');
+
+      let level: RegionRiskLevel = 'normal';
+      if (breachCount >= 3 || (breachCount >= 1 && hasCritical)) {
+        level = 'high';
+      } else if (breachCount >= 1) {
+        level = 'medium';
+      } else if (unacked.length > 0) {
+        level = 'low';
+      }
+
+      return {
+        fenceId: fence.id,
+        name: fence.name,
+        color: fence.color,
+        type: fence.type,
+        level,
+        breachCount,
+        breachDeviceIds,
+        lastTriggerTime,
+        unackedAlertCount: unacked.length,
+        hasLocation
+      };
+    });
+
+    return items.sort((a, b) => {
+      const levelDiff = levelWeight[b.level] - levelWeight[a.level];
+      if (levelDiff !== 0) return levelDiff;
+      if (a.breachCount !== b.breachCount) return b.breachCount - a.breachCount;
+      const ta = a.lastTriggerTime ? new Date(a.lastTriggerTime).getTime() : 0;
+      const tb = b.lastTriggerTime ? new Date(b.lastTriggerTime).getTime() : 0;
+      return tb - ta;
+    });
+  });
+
+  const regionRiskSummary = computed(() => ({
+    high: regionRiskList.value.filter(r => r.level === 'high').length,
+    medium: regionRiskList.value.filter(r => r.level === 'medium').length,
+    low: regionRiskList.value.filter(r => r.level === 'low').length,
+    normal: regionRiskList.value.filter(r => r.level === 'normal').length
+  }));
+
+  const allRegionsNormal = computed(() =>
+    fences.value.length > 0 && regionRiskList.value.every(r => r.level === 'normal')
+  );
+
+  async function loadRegionRisk() {
+    if (regionRiskLoading.value) return;
+    regionRiskLoading.value = true;
+    regionRiskError.value = null;
+    try {
+      // 模拟异步拉取区域风险数据
+      await new Promise(resolve => setTimeout(resolve, 400));
+      if (!Array.isArray(fences.value)) {
+        throw new Error('invalid region data');
+      }
+      regionRiskLoaded.value = true;
+    } catch (err) {
+      regionRiskLoaded.value = false;
+      regionRiskError.value = '区域风险数据加载失败，请检查网络后重试';
+    } finally {
+      regionRiskLoading.value = false;
+    }
+  }
+
+
   function getDeviceHealth(deviceId: string): DeviceHealth | undefined {
     return deviceHealthList.value.find(h => h.deviceId === deviceId);
   }
@@ -869,6 +1010,8 @@ export const useIotStore = defineStore('iot', () => {
     isPlaying, playbackSpeed, showTrack, showStayPoints, showBreachEvents,
     playbackCurrentPoint, playbackProgress, playbackCurrentTime,
     deviceHealthList, priorityInspectionList, healthSummary, recentAbnormalRecords,
+    regionRiskList, regionRiskSummary, allRegionsNormal,
+    regionRiskLoading, regionRiskError, regionRiskLoaded, loadRegionRisk,
     getDeviceById, getFenceById, getGroupById, getDeviceHealth,
     acknowledgeAlert, batchAcknowledgeAlerts, acknowledgeAllAlerts,
     setHighlightedDevice, addAlert, generateMockAlert,
