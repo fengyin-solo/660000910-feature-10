@@ -130,3 +130,22 @@ export interface HealthSummary {
   mediumPriorityCount: number;
   lowPriorityCount: number;
 }
+
+export type ZoneRiskLevel = 'high' | 'medium' | 'low' | 'normal' | 'unknown';
+
+export interface ZoneRiskItem {
+  fenceId: string;
+  name: string;
+  color: string;
+  type: 'circle' | 'polygon';
+  riskLevel: ZoneRiskLevel;
+  /** 当前越界设备数；区域缺少位置资料时为 null */
+  breachDeviceCount: number | null;
+  breachDeviceNames: string[];
+  /** 最近触发时间（ISO 字符串）；从未触发为 null */
+  lastTriggerTime: string | null;
+  /** 是否具备可用于地图定位的位置资料 */
+  hasLocation: boolean;
+  alertOnEnter: boolean;
+  alertOnExit: boolean;
+}

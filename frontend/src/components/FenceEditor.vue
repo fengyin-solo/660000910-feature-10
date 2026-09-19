@@ -81,16 +81,21 @@
 
     <div style="margin-top:auto">
       <h4 style="margin:16px 0 8px;font-size:13px;color:#333">现有围栏 ({{ store.fences.length }})</h4>
-      <div style="display:flex;flex-direction:column;gap:6px">
+      <div ref="fenceListEl" style="display:flex;flex-direction:column;gap:6px">
         <div v-for="f in store.fences" :key="f.id"
+          :data-fence-id="f.id"
           @click="selectFence(f.id)"
           :style="{ display:'flex', alignItems:'center', gap:'10px', padding:'10px', borderRadius:'6px',
-            border:'1px solid ' + (store.selectedFenceId === f.id ? f.color : '#e0e0e0'),
-            background: store.selectedFenceId === f.id ? f.color + '15' : '#fff',
+            border:'1px solid ' + (store.selectedFenceId === f.id ? f.color : (store.highlightedFenceId === f.id ? '#1976d2' : '#e0e0e0')),
+            background: store.selectedFenceId === f.id ? f.color + '15' : (store.highlightedFenceId === f.id ? '#e3f2fd' : '#fff'),
+            boxShadow: store.highlightedFenceId === f.id ? '0 0 0 2px rgba(25,118,210,0.35)' : 'none',
             cursor:'pointer', fontSize:'12px' }">
           <span :style="{ width:'12px', height:'12px', borderRadius: f.type === 'circle' ? '50%' : '2px', background: f.color }"></span>
           <div style="flex:1">
-            <div style="font-weight:500">{{ f.name }}</div>
+            <div style="font-weight:500">
+              {{ f.name }}
+              <span v-if="!store.fenceHasLocation(f)" style="margin-left:4px;font-size:10px;color:#e65100">⚠️ 位置缺失</span>
+            </div>
             <div style="font-size:10px;color:#888">
               {{ f.type === 'circle' ? '圆形 · ' + f.radius + 'm' : '多边形 · ' + (f.paths?.length || 0) + '点' }}
               <span v-if="f.alertOnEnter" style="margin-left:4px">📍入</span>
@@ -104,13 +109,33 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue';
+import { ref, watch, computed, onMounted, nextTick } from 'vue';
 import { useIotStore } from '../stores/iot';
 import type { Geofence } from '../types';
 
 const store = useIotStore();
 
 const colorOptions = ['#4caf50', '#e53935', '#1976d2', '#ff9800', '#9c27b0', '#00bcd4', '#795548', '#607d8b'];
+
+const fenceListEl = ref<HTMLElement | null>(null);
+
+function scrollToHighlightedFence() {
+  if (!store.highlightedFenceId) return;
+  nextTick(() => {
+    const el = fenceListEl.value?.querySelector(`[data-fence-id="${store.highlightedFenceId}"]`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+}
+
+watch(() => store.highlightedFenceId, (id) => {
+  if (id) {
+    scrollToHighlightedFence();
+  }
+});
+
+onMounted(() => {
+  scrollToHighlightedFence();
+});
 
 const editingFence = ref<Partial<Geofence>>({
   name: '',

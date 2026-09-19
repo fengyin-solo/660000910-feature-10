@@ -91,7 +91,22 @@
       </div>
 
       <div style="flex:1;display:flex;flex-direction:column;gap:12px;min-width:0">
-        <div style="flex:1;background:#0d2137;border:1px solid #1e3a5f;border-radius:8px;overflow:hidden;position:relative;min-height:0">
+        <div style="display:flex;gap:8px;flex-shrink:0">
+          <button @click="dashboardView = 'map'" class="dashboard-view-tab"
+            :class="{ 'dashboard-view-tab-active': dashboardView === 'map' }">
+            🗺️ 实时地图
+          </button>
+          <button @click="dashboardView = 'zones'" class="dashboard-view-tab"
+            :class="{ 'dashboard-view-tab-active': dashboardView === 'zones' }">
+            🛡️ 区域风险
+            <span v-if="breachingZoneCount > 0"
+              style="margin-left:6px;padding:1px 7px;border-radius:9px;background:#f44336;color:#fff;font-size:10px;font-weight:600">
+              {{ breachingZoneCount }}
+            </span>
+          </button>
+        </div>
+
+        <div v-show="dashboardView === 'map'" style="flex:1;background:#0d2137;border:1px solid #1e3a5f;border-radius:8px;overflow:hidden;position:relative;min-height:0">
           <div id="monitor-map" style="width:100%;height:100%;filter:brightness(0.85) contrast(1.1)"></div>
           <div style="position:absolute;top:12px;left:12px;background:rgba(13,33,55,0.9);border:1px solid #1e3a5f;border-radius:6px;padding:8px 12px;font-size:12px">
             <div style="display:flex;gap:16px;align-items:center">
@@ -108,6 +123,117 @@
                 离线 {{ store.offlineCount }}
               </span>
             </div>
+          </div>
+        </div>
+
+        <div v-show="dashboardView === 'zones'"
+          style="flex:1;background:#0d2137;border:1px solid #1e3a5f;border-radius:8px;display:flex;flex-direction:column;min-height:0;overflow:hidden">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #1e3a5f;flex-shrink:0">
+            <h3 style="margin:0;font-size:14px;color:#4fc3f7;display:flex;align-items:center;gap:8px">
+              🛡️ 区域风险概览
+            </h3>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div style="display:flex;gap:10px;font-size:11px">
+                <span style="color:#f44336">🔴 高危 {{ zoneRiskSummary.high }}</span>
+                <span style="color:#ff9800">🟠 中危 {{ zoneRiskSummary.medium }}</span>
+                <span style="color:#29b6f6">🔵 低危 {{ zoneRiskSummary.low }}</span>
+                <span style="color:#4caf50">🟢 正常 {{ zoneRiskSummary.normal }}</span>
+                <span v-if="zoneRiskSummary.unknown > 0" style="color:#9e9e9e">⚪ 位置缺失 {{ zoneRiskSummary.unknown }}</span>
+              </div>
+              <button @click="retryLoadZoneRisk" :disabled="store.zoneRiskLoading"
+                :style="{ padding:'4px 12px', borderRadius:'4px', border:'1px solid #37474f', background:'#1e3a5f',
+                  color:'#e0e0e0', cursor: store.zoneRiskLoading ? 'not-allowed' : 'pointer', fontSize:'12px',
+                  opacity: store.zoneRiskLoading ? 0.6 : 1 }">
+                🔄 刷新
+              </button>
+            </div>
+          </div>
+
+          <div style="flex:1;overflow:auto;padding:16px;min-height:0">
+            <div v-if="store.zoneRiskLoading" style="text-align:center;padding:60px 20px;color:#78909c;font-size:13px">
+              <div class="zone-risk-spinner"></div>
+              <div>区域风险数据加载中…</div>
+            </div>
+
+            <div v-else-if="store.zoneRiskError" style="text-align:center;padding:60px 20px">
+              <div style="font-size:36px;margin-bottom:12px">⚠️</div>
+              <div style="color:#ef9a9a;font-size:13px;margin-bottom:16px">{{ store.zoneRiskError }}</div>
+              <button @click="retryLoadZoneRisk"
+                style="padding:8px 24px;border-radius:6px;border:1px solid #ef6c00;background:rgba(255,152,0,0.15);color:#ffb74d;cursor:pointer;font-size:13px">
+                🔄 重试
+              </button>
+            </div>
+
+            <div v-else-if="store.zoneRiskList.length === 0" style="text-align:center;padding:60px 20px;color:#546e7a">
+              <div style="font-size:36px;margin-bottom:12px">🗺️</div>
+              <div style="font-size:14px;color:#78909c;margin-bottom:6px">暂无监控区域</div>
+              <div style="font-size:12px">请先在围栏工作台创建监控区域</div>
+            </div>
+
+            <template v-else>
+              <div v-if="!hasBreachingZones"
+                style="display:flex;align-items:center;gap:12px;padding:14px 16px;margin-bottom:14px;border-radius:8px;border:1px solid #2e7d32;background:rgba(76,175,80,0.08)">
+                <span style="font-size:24px">✅</span>
+                <div>
+                  <div style="font-size:14px;font-weight:600;color:#a5d6a7">全部区域正常</div>
+                  <div style="font-size:11px;color:#78909c;margin-top:2px">当前无越界设备，所有区域状态良好</div>
+                </div>
+              </div>
+
+              <div v-if="zoneLocateHint"
+                style="padding:8px 12px;margin-bottom:12px;border-radius:6px;border:1px solid #ef6c00;background:rgba(255,152,0,0.1);font-size:12px;color:#ffb74d">
+                {{ zoneLocateHint }}
+              </div>
+
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px">
+                <div v-for="item in store.zoneRiskList" :key="item.fenceId"
+                  @click="handleZoneClick(item)"
+                  class="zone-risk-card"
+                  :class="{ 'zone-risk-card-active': store.highlightedFenceId === item.fenceId }"
+                  :style="{ borderColor: store.highlightedFenceId === item.fenceId ? '#4fc3f7' : getRiskLevelColor(item.riskLevel) + '55' }">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                    <span :style="{ width:'10px', height:'10px', flexShrink:0,
+                      borderRadius: item.type === 'circle' ? '50%' : '2px', background: item.color }"></span>
+                    <span style="flex:1;min-width:0;font-weight:600;font-size:13px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                      {{ item.name }}
+                    </span>
+                    <span :style="{ padding:'2px 8px', borderRadius:'4px', fontSize:'10px', fontWeight:600, flexShrink:0,
+                      background: getRiskLevelColor(item.riskLevel) + '26', color: getRiskLevelColor(item.riskLevel) }">
+                      {{ getRiskLevelText(item.riskLevel) }}
+                    </span>
+                  </div>
+                  <div style="font-size:11px;color:#78909c;margin-bottom:10px">
+                    {{ item.type === 'circle' ? '圆形区域' : '多边形区域' }}
+                    <span v-if="item.alertOnEnter" style="margin-left:6px">📍进入告警</span>
+                    <span v-if="item.alertOnExit" style="margin-left:6px">📍离开告警</span>
+                  </div>
+                  <div style="display:flex;gap:20px;align-items:flex-end">
+                    <div>
+                      <div style="font-size:10px;color:#546e7a;margin-bottom:2px">当前越界设备</div>
+                      <span :style="{ fontSize:'22px', fontWeight:700,
+                        color: item.breachDeviceCount === null ? '#546e7a' : item.breachDeviceCount > 0 ? '#f44336' : '#4caf50' }">
+                        {{ item.breachDeviceCount === null ? '—' : item.breachDeviceCount }}
+                      </span>
+                      <span style="font-size:10px;color:#546e7a;margin-left:2px">台</span>
+                    </div>
+                    <div style="flex:1;min-width:0">
+                      <div style="font-size:10px;color:#546e7a;margin-bottom:2px">最近触发</div>
+                      <div style="font-size:12px;color:#b0bec5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                        {{ item.lastTriggerTime ? formatTime(item.lastTriggerTime) : '暂无触发' }}
+                      </div>
+                    </div>
+                  </div>
+                  <div v-if="!item.hasLocation"
+                    style="margin-top:8px;padding:4px 8px;border-radius:4px;background:rgba(158,158,158,0.12);font-size:10px;color:#9e9e9e">
+                    ⚠️ 位置资料缺失 · 已在列表中标记，待补全后可定位
+                  </div>
+                  <div v-else-if="item.breachDeviceNames.length > 0"
+                    style="margin-top:8px;font-size:11px;color:#ef9a9a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                    🚨 {{ item.breachDeviceNames.join('、') }}
+                  </div>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -251,10 +377,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import L from 'leaflet';
 import { useIotStore } from '../stores/iot';
-import type { Alert, AlertType, AlertSeverity, Device } from '../types';
+import type { Alert, AlertType, AlertSeverity, Device, ZoneRiskItem, ZoneRiskLevel } from '../types';
 
 const store = useIotStore();
 
@@ -270,12 +396,27 @@ const scrollOffset = ref(0);
 const alertScrollContainer = ref<HTMLElement | null>(null);
 const alertScrollContent = ref<HTMLElement | null>(null);
 
+const dashboardView = ref<'map' | 'zones'>('map');
+const zoneLocateHint = ref('');
+
 const map = ref<any>(null);
 const fenceLayers = ref<Map<string, any>>(new Map());
 const deviceLayers = ref<Map<string, any>>(new Map());
 
 let timeInterval: number | null = null;
 let scrollInterval: number | null = null;
+let zoneLocateHintTimer: number | null = null;
+
+const zoneRiskSummary = computed(() => {
+  const summary: Record<ZoneRiskLevel, number> = { high: 0, medium: 0, low: 0, normal: 0, unknown: 0 };
+  store.zoneRiskList.forEach(item => {
+    summary[item.riskLevel]++;
+  });
+  return summary;
+});
+
+const breachingZoneCount = computed(() => zoneRiskSummary.value.high + zoneRiskSummary.value.medium);
+const hasBreachingZones = computed(() => breachingZoneCount.value > 0);
 
 function updateTime() {
   const now = new Date();
@@ -370,18 +511,84 @@ function toggleAutoScroll() {
   autoScroll.value = !autoScroll.value;
 }
 
+function getRiskLevelColor(level: ZoneRiskLevel): string {
+  switch (level) {
+    case 'high': return '#f44336';
+    case 'medium': return '#ff9800';
+    case 'low': return '#29b6f6';
+    case 'normal': return '#4caf50';
+    default: return '#9e9e9e';
+  }
+}
+
+function getRiskLevelText(level: ZoneRiskLevel): string {
+  switch (level) {
+    case 'high': return '高危';
+    case 'medium': return '中危';
+    case 'low': return '低危';
+    case 'normal': return '正常';
+    default: return '位置缺失';
+  }
+}
+
+function showZoneLocateHint(text: string) {
+  zoneLocateHint.value = text;
+  if (zoneLocateHintTimer) {
+    clearTimeout(zoneLocateHintTimer);
+  }
+  zoneLocateHintTimer = window.setTimeout(() => {
+    zoneLocateHint.value = '';
+  }, 4000);
+}
+
+function handleZoneClick(item: ZoneRiskItem) {
+  store.setHighlightedFence(item.fenceId);
+  if (!item.hasLocation) {
+    showZoneLocateHint(`「${item.name}」缺少位置资料，已在区域列表中标记，暂无法定位地图`);
+    return;
+  }
+  dashboardView.value = 'map';
+  nextTick(() => {
+    if (map.value) {
+      map.value.invalidateSize();
+    }
+    panToFence(item.fenceId);
+  });
+}
+
+function panToFence(fenceId: string) {
+  const fence = store.getFenceById(fenceId);
+  if (!fence || !map.value || !store.fenceHasLocation(fence)) return;
+  const layer = fenceLayers.value.get(fenceId);
+  if (layer) {
+    map.value.fitBounds(layer.getBounds(), { padding: [60, 60] });
+    layer.openPopup();
+  } else {
+    map.value.panTo([fence.center.lat, fence.center.lng], { animate: true, duration: 0.5 });
+  }
+}
+
+function retryLoadZoneRisk() {
+  store.loadZoneRiskOverview();
+}
+
 function renderFence(fence: any) {
   const layer = fenceLayers.value.get(fence.id);
   if (layer) {
     map.value!.removeLayer(layer);
+    fenceLayers.value.delete(fence.id);
   }
 
+  // 位置资料缺失的区域不在地图上渲染，但仍保留在区域风险看板列表中
+  if (!store.fenceHasLocation(fence)) return;
+
+  const isHighlighted = store.highlightedFenceId === fence.id;
   const style = {
     color: fence.color,
     fillColor: fence.color,
-    fillOpacity: 0.15,
-    weight: 2,
-    dashArray: undefined
+    fillOpacity: isHighlighted ? 0.3 : 0.15,
+    weight: isHighlighted ? 4 : 2,
+    dashArray: isHighlighted ? '6,4' : undefined
   };
 
   let layerObj: any;
@@ -477,6 +684,20 @@ watch(() => store.highlightedDeviceId, (newId) => {
   }
 });
 
+watch(() => store.highlightedFenceId, () => {
+  renderAllFences();
+});
+
+watch(dashboardView, (view) => {
+  if (view === 'map') {
+    nextTick(() => {
+      if (map.value) {
+        map.value.invalidateSize();
+      }
+    });
+  }
+});
+
 onMounted(() => {
   const style = document.createElement('style');
   style.textContent = `
@@ -524,6 +745,51 @@ onMounted(() => {
     .device-rank-item-active {
       background: #132f4c !important;
     }
+    .dashboard-view-tab {
+      padding: 6px 16px;
+      border-radius: 6px;
+      border: 1px solid #1e3a5f;
+      background: #0d2137;
+      color: #78909c;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+    .dashboard-view-tab:hover {
+      background: #132f4c;
+    }
+    .dashboard-view-tab-active {
+      background: #132f4c !important;
+      border-color: #4fc3f7 !important;
+      color: #4fc3f7 !important;
+    }
+    .zone-risk-card {
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #1e3a5f;
+      background: #0a1929;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .zone-risk-card:hover {
+      background: #132f4c;
+    }
+    .zone-risk-card-active {
+      background: #132f4c !important;
+      box-shadow: 0 0 0 1px #4fc3f7;
+    }
+    .zone-risk-spinner {
+      width: 28px;
+      height: 28px;
+      margin: 0 auto 12px;
+      border: 3px solid #1e3a5f;
+      border-top-color: #4fc3f7;
+      border-radius: 50%;
+      animation: zone-risk-spin 0.8s linear infinite;
+    }
+    @keyframes zone-risk-spin {
+      to { transform: rotate(360deg); }
+    }
     .dark-popup .leaflet-popup-content-wrapper {
       background: #0d2137;
       color: #e0e0e0;
@@ -568,12 +834,17 @@ onMounted(() => {
   renderAllFences();
   renderAllDevices();
 
+  if (store.highlightedFenceId) {
+    panToFence(store.highlightedFenceId);
+  }
+
   updateTime();
   timeInterval = window.setInterval(updateTime, 1000);
 
   scrollInterval = window.setInterval(updateScroll, 50);
 
   store.startMockAlertStream();
+  store.loadZoneRiskOverview();
 });
 
 onUnmounted(() => {
@@ -585,6 +856,9 @@ onUnmounted(() => {
   }
   if (scrollInterval) {
     clearInterval(scrollInterval);
+  }
+  if (zoneLocateHintTimer) {
+    clearTimeout(zoneLocateHintTimer);
   }
   store.stopMockAlertStream();
   store.setHighlightedDevice(null);

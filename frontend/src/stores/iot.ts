@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { Device, Geofence, Alert, AlertType, AlertSeverity, DeviceGroup, DeviceThresholds, TrackData, TrackPoint, StayPoint, TrackSegment, HealthDataPoint, DeviceHealth, HealthSummary } from '../types';
+import type { Device, Geofence, Alert, AlertType, AlertSeverity, DeviceGroup, DeviceThresholds, TrackData, TrackPoint, StayPoint, TrackSegment, HealthDataPoint, DeviceHealth, HealthSummary, ZoneRiskItem, ZoneRiskLevel } from '../types';
 
 function generateId(prefix: string) {
   return prefix + Date.now() + Math.random().toString(36).slice(2, 6);
@@ -24,6 +24,8 @@ export const useIotStore = defineStore('iot', () => {
         { lat: 39.8972, lng: 116.4154 },
         { lat: 39.8972, lng: 116.4094 },
       ], alertOnEnter: true, alertOnExit: true, color: '#1976d2' },
+    // 位置资料缺失的区域：仍应在区域风险视图中列出并标记
+    { id: 'f4', name: '港区临时区域', center: { lat: NaN, lng: NaN }, radius: 300, type: 'circle', alertOnEnter: true, alertOnExit: false, color: '#795548' },
   ]);
   const alerts = ref<Alert[]>([
     {
@@ -53,13 +55,28 @@ export const useIotStore = defineStore('iot', () => {
       timestamp: new Date(Date.now() - 600000).toISOString(),
       message: '设备进入危险区域',
       acknowledged: false
+    },
+    {
+      id: generateId('a'),
+      deviceId: 'd5',
+      fenceId: 'f4',
+      type: 'exit',
+      severity: 'warning',
+      timestamp: new Date(Date.now() - 7200000).toISOString(),
+      message: '设备离开港区临时区域',
+      acknowledged: true
     }
   ]);
   const selectedFenceId = ref<string | null>(null);
   const editMode = ref<'none' | 'draw-circle' | 'draw-polygon' | 'edit'>('none');
   const highlightedDeviceId = ref<string | null>(null);
+  const highlightedFenceId = ref<string | null>(null);
   const isRegisteringDevice = ref(false);
   const registrationLocation = ref<{ lat: number; lng: number } | null>(null);
+
+  const zoneRiskLoading = ref(false);
+  const zoneRiskError = ref<string | null>(null);
+  const zoneRiskLoaded = ref(false);
 
   const trackPlaybackEnabled = ref(false);
   const trackData = ref<TrackData | null>(null);
@@ -172,6 +189,10 @@ export const useIotStore = defineStore('iot', () => {
 
   function setHighlightedDevice(id: string | null) {
     highlightedDeviceId.value = id;
+  }
+
+  function setHighlightedFence(id: string | null) {
+    highlightedFenceId.value = id;
   }
 
   function addAlert(alert: Omit<Alert, 'id' | 'acknowledged'>) {
@@ -853,12 +874,126 @@ export const useIotStore = defineStore('iot', () => {
       .slice(0, 20);
   });
 
+  function fenceHasLocation(fence: Geofence): boolean {
+    const c = fence.center;
+    if (!c || !Number.isFinite(c.lat) || !Number.isFinite(c.lng)) return false;
+    if (fence.type === 'circle') {
+      return Number.isFinite(fence.radius) && fence.radius > 0;
+    }
+    return Array.isArray(fence.paths) && fence.paths.length >= 3 &&
+      fence.paths.every(p => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+  }
+
+  function isPointInFence(lat: number, lng: number, fence: Geofence): boolean {
+    if (!fenceHasLocation(fence)) return false;
+    if (fence.type === 'circle') {
+      const R = 6371000;
+      const rad = Math.PI / 180;
+      const dLat = (lat - fence.center.lat) * rad;
+      const dLng = (lng - fence.center.lng) * rad;
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(fence.center.lat * rad) * Math.cos(lat * rad) *
+        Math.sin(dLng / 2) * Math.sin(dLng / 2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) <= fence.radius;
+    }
+    const paths = fence.paths!;
+    let inside = false;
+    for (let i = 0, j = paths.length - 1; i < paths.length; j = i++) {
+      const xi = paths[i].lng, yi = paths[i].lat;
+      const xj = paths[j].lng, yj = paths[j].lat;
+      if ((yi > lat) !== (yj > lat) && lng < (xj - xi) * (lat - yi) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  const zoneRiskList = computed<ZoneRiskItem[]>(() => {
+    const items = fences.value.map(fence => {
+      const hasLocation = fenceHasLocation(fence);
+
+      let breachDeviceCount: number | null = null;
+      let breachDeviceNames: string[] = [];
+      if (hasLocation) {
+        const breaching = devices.value.filter(d => {
+          if (d.status === 'offline') return false;
+          const inside = isPointInFence(d.lat, d.lng, fence);
+          return fence.alertOnEnter ? inside : !inside;
+        });
+        breachDeviceCount = breaching.length;
+        breachDeviceNames = breaching.map(d => d.name);
+      }
+
+      let lastTriggerTime: string | null = null;
+      alerts.value.forEach(a => {
+        if (a.fenceId === fence.id && (!lastTriggerTime || a.timestamp > lastTriggerTime)) {
+          lastTriggerTime = a.timestamp;
+        }
+      });
+
+      let riskLevel: ZoneRiskLevel;
+      if (!hasLocation) {
+        riskLevel = 'unknown';
+      } else if (breachDeviceCount! > 0) {
+        riskLevel = fence.alertOnEnter ? 'high' : 'medium';
+      } else if (lastTriggerTime && Date.now() - new Date(lastTriggerTime).getTime() < 3600000) {
+        riskLevel = 'low';
+      } else {
+        riskLevel = 'normal';
+      }
+
+      return {
+        fenceId: fence.id,
+        name: fence.name,
+        color: fence.color,
+        type: fence.type,
+        riskLevel,
+        breachDeviceCount,
+        breachDeviceNames,
+        lastTriggerTime,
+        hasLocation,
+        alertOnEnter: fence.alertOnEnter,
+        alertOnExit: fence.alertOnExit
+      };
+    });
+
+    const levelOrder: Record<ZoneRiskLevel, number> = { high: 0, medium: 1, unknown: 2, low: 3, normal: 4 };
+    return items.sort((a, b) => {
+      const levelDiff = levelOrder[a.riskLevel] - levelOrder[b.riskLevel];
+      if (levelDiff !== 0) return levelDiff;
+      const countDiff = (b.breachDeviceCount ?? -1) - (a.breachDeviceCount ?? -1);
+      if (countDiff !== 0) return countDiff;
+      const ta = a.lastTriggerTime ? new Date(a.lastTriggerTime).getTime() : 0;
+      const tb = b.lastTriggerTime ? new Date(b.lastTriggerTime).getTime() : 0;
+      return tb - ta;
+    });
+  });
+
+  function loadZoneRiskOverview() {
+    if (zoneRiskLoading.value) return Promise.resolve();
+    zoneRiskLoading.value = true;
+    zoneRiskError.value = null;
+    // 模拟异步加载区域风险数据，可能失败以便前端走重试流程
+    return new Promise<void>((resolve) => {
+      window.setTimeout(() => {
+        if (Math.random() < 0.2) {
+          zoneRiskError.value = '区域风险数据加载失败，请检查网络后重试';
+          zoneRiskLoaded.value = false;
+        } else {
+          zoneRiskLoaded.value = true;
+        }
+        zoneRiskLoading.value = false;
+        resolve();
+      }, 500);
+    });
+  }
+
   function getDeviceHealth(deviceId: string): DeviceHealth | undefined {
     return deviceHealthList.value.find(h => h.deviceId === deviceId);
   }
 
   return {
-    devices, fences, alerts, selectedFenceId, editMode, highlightedDeviceId,
+    devices, fences, alerts, selectedFenceId, editMode, highlightedDeviceId, highlightedFenceId,
     isRegisteringDevice, registrationLocation, groups,
     onlineCount, offlineCount, alertDeviceCount, deviceCount, fenceCount, alertCount, selectedFence,
     avgBattery, avgTemperature, lowBatteryCount, devicesRanked, recentAlerts,
@@ -869,9 +1004,10 @@ export const useIotStore = defineStore('iot', () => {
     isPlaying, playbackSpeed, showTrack, showStayPoints, showBreachEvents,
     playbackCurrentPoint, playbackProgress, playbackCurrentTime,
     deviceHealthList, priorityInspectionList, healthSummary, recentAbnormalRecords,
+    zoneRiskList, zoneRiskLoading, zoneRiskError, zoneRiskLoaded,
     getDeviceById, getFenceById, getGroupById, getDeviceHealth,
     acknowledgeAlert, batchAcknowledgeAlerts, acknowledgeAllAlerts,
-    setHighlightedDevice, addAlert, generateMockAlert,
+    setHighlightedDevice, setHighlightedFence, addAlert, generateMockAlert,
     startMockAlertStream, stopMockAlertStream,
     addFence, updateFence, deleteFence, selectFence, setEditMode,
     addDevice, startDeviceRegistration, cancelDeviceRegistration, setRegistrationLocation,
@@ -880,6 +1016,7 @@ export const useIotStore = defineStore('iot', () => {
     jumpToStayPoint, jumpToBreachEvent,
     enableTrackPlayback, disableTrackPlayback,
     toggleTrackVisibility, toggleStayPointsVisibility, toggleBreachEventsVisibility,
+    fenceHasLocation, isPointInFence, loadZoneRiskOverview,
     formatDuration, formatDistance
   };
 });

@@ -111,6 +111,9 @@ const endPointIcon = L.divIcon({
 function renderFence(fence: Geofence) {
   clearFenceLayer(fence.id);
 
+  // 位置资料缺失的围栏无法在地图上渲染（仍会在围栏列表与区域风险看板中列出并标记）
+  if (!store.fenceHasLocation(fence)) return;
+
   const isSelected = store.selectedFenceId === fence.id;
   const weight = isSelected ? 3 : 2;
   const dashArray = undefined;
@@ -608,6 +611,17 @@ function panToDevice(deviceId: string) {
   }
 }
 
+function panToFence(fenceId: string) {
+  const fence = store.getFenceById(fenceId);
+  if (!fence || !map.value || !store.fenceHasLocation(fence)) return;
+  const layer = fenceLayers.value.get(fenceId);
+  if (layer) {
+    map.value.fitBounds(layer.getBounds(), { padding: [60, 60] });
+  } else {
+    map.value.panTo([fence.center.lat, fence.center.lng], { animate: true, duration: 0.5 });
+  }
+}
+
 function clearAllTrackLayers() {
   trackLayers.value.forEach(layer => map.value!.removeLayer(layer));
   trackLayers.value = [];
@@ -843,6 +857,12 @@ watch(() => store.highlightedDeviceId, (newId, oldId) => {
   }
 });
 
+watch(() => store.highlightedFenceId, (newId) => {
+  if (newId) {
+    panToFence(newId);
+  }
+});
+
 watch(() => store.isRegisteringDevice, (isRegistering) => {
   if (!isRegistering) {
     clearRegistrationMarker();
@@ -911,6 +931,10 @@ onMounted(() => {
 
   renderAllFences();
   renderAllDevices();
+
+  if (store.highlightedFenceId) {
+    panToFence(store.highlightedFenceId);
+  }
 });
 
 onUnmounted(() => {
